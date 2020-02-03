@@ -5,6 +5,7 @@ authors = ["Simon Dickson <simonhdickson@users.noreply.github.com>"]
 edition = "2018"
 
 [dependencies]
+argh = "0.1"
 bytes = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 failure = "0.1"

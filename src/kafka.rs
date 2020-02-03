@@ -7,11 +7,12 @@ use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::{CommitMode, Consumer, ConsumerContext, Rebalance};
 use rdkafka::error::KafkaResult;
 use rdkafka::message::Message as KafkaMessage;
+use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::topic_partition_list::TopicPartitionList;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{self, Sender};
 use tonic::Status;
 
-use crate::proximo::{Confirmation, Message};
+use crate::proximo::{Confirmation, Message, Offset};
 
 enum Command<'a> {
     Kafka(rdkafka::message::BorrowedMessage<'a>),
@@ -23,27 +24,47 @@ struct CustomContext;
 impl ClientContext for CustomContext {}
 
 impl ConsumerContext for CustomContext {
-    fn pre_rebalance(&self, rebalance: &Rebalance) {}
+    fn pre_rebalance(&self, _rebalance: &Rebalance) {}
 
-    fn post_rebalance(&self, rebalance: &Rebalance) {}
+    fn post_rebalance(&self, _rebalance: &Rebalance) {}
 
-    fn commit_callback(&self, result: KafkaResult<()>, _offsets: &TopicPartitionList) {}
+    fn commit_callback(&self, _result: KafkaResult<()>, _offsets: &TopicPartitionList) {}
 }
 
 type LoggingConsumer = StreamConsumer<CustomContext>;
 
-pub fn start<ConfirmStream>(topic: &str, consumer: &str, mut tx: Sender<Result<Message, Status>>, rx: ConfirmStream)
-where
-    ConfirmStream: Stream<Item=Confirmation> + Send + 'static + Unpin,
+pub fn consume<ConfirmStream>(
+    servers: &str,
+    topic: &str,
+    consumer: &str,
+    initial_offset: Offset,
+    mut tx: Sender<Result<Message, Status>>,
+    rx: ConfirmStream,
+) where
+    ConfirmStream: Stream<Item = Confirmation> + Send + 'static + Unpin,
 {
     let context = CustomContext;
 
-    let consumer: LoggingConsumer = ClientConfig::new()
+    let mut config = ClientConfig::new();
+
+    config
         .set("group.id", consumer)
-        .set("bootstrap.servers", "localhost:9092")
+        .set("bootstrap.servers", servers)
         .set("enable.partition.eof", "false")
         .set("session.timeout.ms", "6000")
-        .set("enable.auto.commit", "true")
+        .set("enable.auto.commit", "false");
+
+    match initial_offset {
+        Offset::Newest => {
+            config.set("auto.offset.reset", "earliest");
+        }
+        Offset::Oldest => {
+            config.set("auto.offset.reset", "latest");
+        }
+        _ => (),
+    };
+
+    let consumer: LoggingConsumer = config
         .create_with_context(context)
         .expect("Consumer creation failed");
 
@@ -78,6 +99,51 @@ where
                     consumer.commit_message(&m, CommitMode::Async).unwrap();
                 }
                 Err(e) => panic!(e),
+            }
+        }
+    });
+}
+
+pub fn publish<MessageStream>(
+    servers: &str,
+    topic: &str,
+    mut tx: Sender<Result<Confirmation, Status>>,
+    mut rx: MessageStream,
+) where
+    MessageStream: Stream<Item = Message> + Send + 'static + Unpin,
+{
+    let topic = topic.to_owned();
+
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", servers)
+        .set("message.timeout.ms", "5000")
+        .create()
+        .expect("Producer creation error");
+
+    let (mut ack_tx, mut ack_rx) = mpsc::channel(4);
+
+    tokio::spawn(async move {
+        while let Some((delivery_status, msg_id)) = ack_rx.next().await {
+            match delivery_status.await {
+                Ok(Ok((_, _))) => {
+                    tx.send(Ok(Confirmation { msg_id })).await.unwrap();
+                }
+                e => panic!(e),
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(m) = rx.next().await {
+            let delivery_status = producer.send(
+                FutureRecord::to(&topic)
+                    .payload(&m.data)
+                    .key(&format!("Key {}", "0")),
+                0,
+            );
+
+            if let Err(e) = ack_tx.send((delivery_status, m.id)).await {
+                panic!(e)
             }
         }
     });
