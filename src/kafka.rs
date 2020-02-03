@@ -56,10 +56,10 @@ pub fn consume<ConfirmStream>(
 
     match initial_offset {
         Offset::Newest => {
-            config.set("auto.offset.reset", "earliest");
+            config.set("auto.offset.reset", "latest");
         }
         Offset::Oldest => {
-            config.set("auto.offset.reset", "latest");
+            config.set("auto.offset.reset", "earliest");
         }
         _ => (),
     };
@@ -86,17 +86,22 @@ pub fn consume<ConfirmStream>(
                 Ok(Command::Kafka(m)) => {
                     let payload = m.payload_view::<[u8]>().unwrap().unwrap();
 
-                    tx.send(Ok(Message {
-                        id: m.offset().to_string(),
-                        data: payload.into(),
-                    }))
-                    .await
-                    .unwrap();
+                    if let Err(e) = tx
+                        .send(Ok(Message {
+                            id: m.offset().to_string(),
+                            data: payload.into(),
+                        }))
+                        .await
+                    {
+                        println!("{}", e)
+                    }
                     messages.insert(m.offset(), m);
                 }
                 Ok(Command::Proximo(c)) => {
                     let m = messages.remove(&c.msg_id.parse::<i64>().unwrap()).unwrap();
-                    consumer.commit_message(&m, CommitMode::Async).unwrap();
+                    if let Err(e) = consumer.commit_message(&m, CommitMode::Async) {
+                        println!("{}", e)
+                    }
                 }
                 Err(e) => panic!(e),
             }
@@ -126,9 +131,15 @@ pub fn publish<MessageStream>(
         while let Some((delivery_status, msg_id)) = ack_rx.next().await {
             match delivery_status.await {
                 Ok(Ok((_, _))) => {
-                    tx.send(Ok(Confirmation { msg_id })).await.unwrap();
+                    if let Err(e) = tx.send(Ok(Confirmation { msg_id })).await {
+                        println!("{}", e);
+                        return
+                    }
                 }
-                e => panic!(e),
+                e => {
+                    println!("{:?}", e);
+                    return
+                }
             }
         }
     });
@@ -143,7 +154,8 @@ pub fn publish<MessageStream>(
             );
 
             if let Err(e) = ack_tx.send((delivery_status, m.id)).await {
-                panic!(e)
+                println!("{}", e);
+                return
             }
         }
     });
