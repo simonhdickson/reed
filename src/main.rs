@@ -1,5 +1,6 @@
 use argh::FromArgs;
 use futures::StreamExt;
+use log::info;
 use tokio::sync::mpsc;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -33,14 +34,13 @@ impl MessageSource for MessageSourceService {
         let start = req.start_request.unwrap();
 
         let stream = stream.filter_map(|i| async move {
-            if let Ok(ConsumerRequest {
-                confirmation: Some(c),
-                ..
-            }) = i
-            {
-                Some(c)
-            } else {
-                None
+            match i {
+                Ok(ConsumerRequest {
+                    confirmation: Some(c),
+                    ..
+                }) => Some(Ok(c)),
+                Ok(_) => None,
+                Err(e) => Some(Err(e)),
             }
         });
 
@@ -80,10 +80,10 @@ impl MessageSink for MessageSinkService {
         let start = req.start_request.unwrap();
 
         let stream = stream.filter_map(|i| async move {
-            if let Ok(PublisherRequest { msg: Some(m), .. }) = i {
-                Some(m)
-            } else {
-                None
+            match i {
+                Ok(PublisherRequest { msg: Some(m), .. }) => Some(Ok(m)),
+                Ok(_) => None,
+                Err(e) => Some(Err(e)),
             }
         });
 
@@ -98,10 +98,14 @@ impl MessageSink for MessageSinkService {
 }
 
 #[derive(FromArgs, PartialEq, Debug, Clone)]
-/// Reed: Proximo Server implementation written in Rust.
+/// Reed: Proximo Server implementation written in Rust
 struct ReedArgs {
     #[argh(subcommand)]
     subcommand: SubCommands,
+
+    #[argh(option, default = "6868")]
+    /// port to use
+    port: usize,
 }
 
 #[derive(FromArgs, PartialEq, Debug, Clone)]
@@ -111,11 +115,11 @@ enum SubCommands {
 }
 
 #[derive(FromArgs, PartialEq, Debug, Clone)]
-/// start kafka backed proximo instance.
+/// start kafka backed proximo instance
 #[argh(subcommand, name = "kafka")]
 struct KafkaCommand {
     #[argh(positional)]
-    // Kafka ervers to connect to.
+    /// kafka servers to connect to
     servers: String,
 }
 
@@ -123,9 +127,11 @@ struct KafkaCommand {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: ReedArgs = argh::from_env();
 
-    let addr = "0.0.0.0:6868".parse().unwrap();
+    env_logger::init();
 
-    println!("Proximo Server listening on: {}", addr);
+    let addr = format!("0.0.0.0:{}", args.port).parse().unwrap();
+
+    info!("Proximo Server listening on: {}", addr);
 
     let source_svc = MessageSourceServer::new(MessageSourceService { args: args.clone() });
     let sink_svc = MessageSinkServer::new(MessageSinkService { args });

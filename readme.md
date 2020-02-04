@@ -2,7 +2,16 @@
 
 Implementation of [Proximo](https://github.com/uw-labs/proximo) written in Rust.
 
-WIP has at least one known breaking bug.
+## Quick start
+
+```
+git clone https://github.com/simonhdickson/reed.git
+cd reed
+docker-compose up -d
+cargo run --release -- kafka localhost:9092
+```
+
+## Help
 
 ```
 Usage: reed <command> [<args>]

@@ -41,7 +41,7 @@ pub fn consume<ConfirmStream>(
     mut tx: Sender<Result<Message, Status>>,
     rx: ConfirmStream,
 ) where
-    ConfirmStream: Stream<Item = Confirmation> + Send + 'static + Unpin,
+    ConfirmStream: Stream<Item = Result<Confirmation, Status>> + Send + 'static + Unpin,
 {
     let context = CustomContext;
 
@@ -77,7 +77,7 @@ pub fn consume<ConfirmStream>(
         let message_stream = consumer
             .start()
             .map(|m| m.map(Command::Kafka).map_err(|e| e.to_string()));
-        let rx = rx.map(|m| Ok(Command::Proximo(m)));
+        let rx = rx.map(|m| Ok(Command::Proximo(m.unwrap())));
 
         let mut s = stream::select(message_stream, rx);
 
@@ -86,22 +86,17 @@ pub fn consume<ConfirmStream>(
                 Ok(Command::Kafka(m)) => {
                     let payload = m.payload_view::<[u8]>().unwrap().unwrap();
 
-                    if let Err(e) = tx
-                        .send(Ok(Message {
-                            id: m.offset().to_string(),
-                            data: payload.into(),
-                        }))
-                        .await
-                    {
-                        println!("{}", e)
-                    }
+                    tx.send(Ok(Message {
+                        id: m.offset().to_string(),
+                        data: payload.into(),
+                    }))
+                    .await
+                    .unwrap();
                     messages.insert(m.offset(), m);
                 }
                 Ok(Command::Proximo(c)) => {
                     let m = messages.remove(&c.msg_id.parse::<i64>().unwrap()).unwrap();
-                    if let Err(e) = consumer.commit_message(&m, CommitMode::Async) {
-                        println!("{}", e)
-                    }
+                    consumer.commit_message(&m, CommitMode::Async).unwrap();
                 }
                 Err(e) => panic!(e),
             }
@@ -115,7 +110,7 @@ pub fn publish<MessageStream>(
     mut tx: Sender<Result<Confirmation, Status>>,
     mut rx: MessageStream,
 ) where
-    MessageStream: Stream<Item = Message> + Send + 'static + Unpin,
+    MessageStream: Stream<Item = Result<Message, Status>> + Send + 'static + Unpin,
 {
     let topic = topic.to_owned();
 
@@ -131,21 +126,16 @@ pub fn publish<MessageStream>(
         while let Some((delivery_status, msg_id)) = ack_rx.next().await {
             match delivery_status.await {
                 Ok(Ok((_, _))) => {
-                    if let Err(e) = tx.send(Ok(Confirmation { msg_id })).await {
-                        println!("{}", e);
-                        return
-                    }
+                    tx.send(Ok(Confirmation { msg_id })).await.unwrap();
                 }
-                e => {
-                    println!("{:?}", e);
-                    return
-                }
+                e => panic!(e),
             }
         }
     });
 
     tokio::spawn(async move {
         while let Some(m) = rx.next().await {
+            let m = m.unwrap();
             let delivery_status = producer.send(
                 FutureRecord::to(&topic)
                     .payload(&m.data)
@@ -154,8 +144,7 @@ pub fn publish<MessageStream>(
             );
 
             if let Err(e) = ack_tx.send((delivery_status, m.id)).await {
-                println!("{}", e);
-                return
+                panic!(e);
             }
         }
     });
