@@ -2,6 +2,14 @@
 name = "reed"
 version = "0.1.0"
 authors = ["Simon Dickson <simonhdickson@users.noreply.github.com>"]
+description = """
+Proximo Server implementation written in Rust.
+"""
+documentation = "https://github.com/simonhdickson/reed"
+homepage = "https://github.com/simonhdickson/reed"
+repository = "https://github.com/simonhdickson/reed"
+readme = "readme.md"
+license = "MIT"
 edition = "2018"
 
 [dependencies]
