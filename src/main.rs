@@ -10,6 +10,7 @@ use proximo::message_source_server::{MessageSource, MessageSourceServer};
 use proximo::{Confirmation, ConsumerRequest, Message, Offset, PublisherRequest};
 
 mod kafka;
+mod mem;
 
 mod proximo {
     tonic::include_proto!("proximo");
@@ -55,6 +56,16 @@ impl MessageSource for MessageSourceService {
                     Box::pin(stream),
                 );
             }
+            SubCommands::Mem(_) => {
+                mem::consume(
+                    &start.topic,
+                    &start.consumer,
+                    Offset::from_i32(start.initial_offset).unwrap(),
+                    ack_tx,
+                    Box::pin(stream),
+                )
+                .await;
+            }
         }
 
         Ok(Response::new(ack_rx))
@@ -91,6 +102,9 @@ impl MessageSink for MessageSinkService {
             SubCommands::Kafka(command) => {
                 kafka::publish(&command.servers, &start.topic, ack_tx, Box::pin(stream));
             }
+            SubCommands::Mem(_) => {
+                mem::publish(&start.topic, ack_tx, Box::pin(stream)).await;
+            }
         }
 
         Ok(Response::new(ack_rx))
@@ -112,6 +126,7 @@ struct ReedArgs {
 #[argh(subcommand)]
 enum SubCommands {
     Kafka(KafkaCommand),
+    Mem(MemCommand),
 }
 
 #[derive(FromArgs, PartialEq, Debug, Clone)]
@@ -122,6 +137,11 @@ struct KafkaCommand {
     /// kafka servers to connect to
     servers: String,
 }
+
+#[derive(FromArgs, PartialEq, Debug, Clone)]
+/// start mem backed proximo instance
+#[argh(subcommand, name = "mem")]
+struct MemCommand {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
